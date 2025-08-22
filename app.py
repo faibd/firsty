@@ -1,11 +1,11 @@
 from flask import Flask, request, jsonify, Response
 from openai import OpenAI
+from tenacity import retry, wait_random_exponential, stop_after_attempt
 import os
 import tempfile
 import base64
 
 app = Flask(__name__)
-# Ensure openai>=1.50.0 to avoid 'proxies' error with httpx
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # HTML frontend embedded as a string
@@ -98,6 +98,25 @@ HTML_CONTENT = """
 def home():
     return Response(HTML_CONTENT, mimetype='text/html')
 
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
+def transcribe_audio(file_path):
+    with open(file_path, "rb") as f:
+        return client.audio.transcriptions.create(model="whisper-1", file=f)
+
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
+def generate_chat_response(user_input):
+    return client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "You are a helpful voice assistant."},
+            {"role": "user", "content": user_input}
+        ]
+    )
+
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
+def generate_speech(text):
+    return client.audio.speech.create(model="tts-1", voice="alloy", input=text)
+
 @app.route('/voice-agent', methods=['POST'])
 def voice_agent():
     try:
@@ -113,31 +132,16 @@ def voice_agent():
             temp_audio_path = temp_audio.name
 
         # Transcribe audio using OpenAI Whisper
-        with open(temp_audio_path, "rb") as f:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f
-            )
-        
+        transcription = transcribe_audio(temp_audio_path)
         user_input = transcription.text
 
         # Generate response using OpenAI's chat model
-        chat_response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful voice assistant."},
-                {"role": "user", "content": user_input}
-            ]
-        )
+        chat_response = generate_chat_response(user_input)
         text_response = chat_response.choices[0].message.content
 
         # Convert response to speech
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_speech:
-            speech_response = client.audio.speech.create(
-                model="tts-1",
-                voice="alloy",
-                input=text_response
-            )
+            speech_response = generate_speech(text_response)
             speech_response.stream_to_file(temp_speech.name)
             temp_speech_path = temp_speech.name
 
