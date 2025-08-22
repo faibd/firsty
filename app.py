@@ -5,6 +5,7 @@ import tempfile
 import base64
 
 app = Flask(__name__)
+# Ensure openai>=1.50.0 to avoid 'proxies' error with httpx
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # HTML frontend embedded as a string
